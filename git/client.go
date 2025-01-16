@@ -469,6 +469,85 @@ func parseBranchConfig(branchConfigLines []string, remotePushDefault string, rev
 	return cfg
 }
 
+// ReadGHBranchConfig parses the git config to determine the merge and push remotes for the branch
+// as well as the merge base branch.
+func (c *Client) ReadGHBranchConfig(ctx context.Context, branch string) (GHBranchConfig, error) {
+
+	prefix := regexp.QuoteMeta(fmt.Sprintf("branch.%s.", branch))
+	args := []string{"config", "--get-regexp", fmt.Sprintf("^%s(remote|merge|pushremote|%s)$", prefix, MergeBaseConfig)}
+	cmd, err := c.Command(ctx, args...)
+	if err != nil {
+		return GHBranchConfig{}, err
+	}
+
+	// This is the error we expect if a git command does not run successfully.
+	// If the ExitCode is 1, then we just didn't find any config for the branch.
+	// We will use this error to check against the commands that are allowed to
+	// return an empty result.
+	var gitError *GitError
+	branchCfgOut, err := cmd.Output()
+	if err != nil {
+		if ok := errors.As(err, &gitError); ok && gitError.ExitCode != 1 {
+			return GHBranchConfig{}, err
+		}
+		return GHBranchConfig{}, nil
+	}
+
+	// Check to see if there is a pushDefault ref set for the repo
+	remotePushDefaultOut, err := c.Config(ctx, "remote.pushDefault")
+	if ok := errors.As(err, &gitError); ok && gitError.ExitCode != 1 {
+		return GHBranchConfig{}, err
+	}
+
+	// Check to see if we can resolve the @{push} revision syntax. This is the easiest way to get
+	// the name of the push remote.
+	//We ignore errors resolving simple push.Default settings as these are handled downstream
+	revParseOut, _ := c.revParse(ctx, "--verify", "--quiet", "--abbrev-ref", branch+"@{push}")
+
+	return parseGHBranchConfig(branch, outputLines(branchCfgOut), strings.TrimSuffix(remotePushDefaultOut, "\n"), firstLine(revParseOut)), nil
+}
+
+func parseGHBranchConfig(branch string, branchConfigLines []string, remotePushDefault string, revParse string) GHBranchConfig {
+	var ghBranchConfig GHBranchConfig
+	ghBranchConfig.Push.Branch = branch
+
+	var pushRemote string
+	for _, line := range branchConfigLines {
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		keys := strings.Split(parts[0], ".")
+		switch keys[len(keys)-1] {
+		case "remote":
+			ghBranchConfig.Push.Remote = parts[1]
+			ghBranchConfig.Merge.Remote = parts[1]
+		case "merge":
+			mergeBranch := strings.TrimPrefix(parts[1], "refs/heads/")
+			ghBranchConfig.Merge.Branch = mergeBranch
+		case "pushremote":
+			pushRemote = strings.TrimPrefix(parts[1], "refs/remotes/")
+			// TODO: handle gh-merge-base
+		}
+	}
+
+	if pushRemote != "" {
+		ghBranchConfig.Push.Remote = pushRemote
+	}
+
+	if revParse != "" {
+		revParseParts := strings.Split(revParse, "/")
+		ghBranchConfig.Push.Remote = revParseParts[0]
+		ghBranchConfig.Push.Branch = revParseParts[1]
+	}
+
+	if remotePushDefault != "" {
+		ghBranchConfig.Push.Remote = remotePushDefault
+	}
+
+	return ghBranchConfig
+}
+
 // SetBranchConfig sets the named value on the given branch.
 func (c *Client) SetBranchConfig(ctx context.Context, branch, name, value string) error {
 	name = fmt.Sprintf("branch.%s.%s", branch, name)

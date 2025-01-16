@@ -71,3 +71,13 @@ type BranchConfig struct {
 	PushRemoteName    string
 	Push              string
 }
+
+type GHBranchConfig struct {
+	Merge RemoteRef
+	Push  RemoteRef
+}
+
+type RemoteRef struct {
+	Remote string
+	Branch string
+}

@@ -1145,6 +1145,203 @@ func Test_parseBranchConfig(t *testing.T) {
 	}
 }
 
+// TODO: Implement these tests
+// func TestClientReadGHBranchConfig(t *testing.T) {
+// 	tests := []struct {
+// 		name               string
+// 		cmds               mockedCommands
+// 		branch             string
+// 		wantGHBranchConfig GHBranchConfig
+// 		wantError          *GitError
+// 	}{
+// 		{
+// 			name: "centralized workflow",
+// 			cmds: mockedCommands{
+// 				`path/to/git config --get-regexp ^branch\.feature-branch\.(remote|merge|pushremote|gh-merge-base)$`: {
+// 					Stdout: "branch.feature-branch.remote origin\nbranch.feature-branch.merge refs/heads/feature-branch\n",
+// 				},
+// 				`path/to/git config remote.pushDefault`: {
+// 					Stdout: "simple",
+// 				},
+// 				`path/to/git rev-parse --verify --quiet --abbrev-ref trunk@{push}`: {
+// 					Stdout: "origin/feature-branch",
+// 				},
+// 			},
+// 			branch: "trunk",
+// 			wantGHBranchConfig: GHBranchConfig{
+// 				Merge: RemoteRef{
+// 					Remote: "origin",
+// 					Branch: "feature-branch",
+// 				},
+// 				Push: RemoteRef{
+// 					Remote: "origin",
+// 					Branch: "feature-branch",
+// 				},
+// 			},
+// 			wantError: nil,
+// 		},
+// 	}
+// 	for _, tt := range tests {
+// 		t.Run(tt.name, func(t *testing.T) {
+// 			cmdCtx := createMockedCommandContext(t, tt.cmds)
+// 			client := Client{
+// 				GitPath:        "path/to/git",
+// 				commandContext: cmdCtx,
+// 			}
+// 			ghBranchConfig, err := client.ReadGHBranchConfig(context.Background(), tt.branch)
+// 			if tt.wantError != nil {
+// 				var gitError *GitError
+// 				require.ErrorAs(t, err, &gitError)
+// 				assert.Equal(t, tt.wantError.ExitCode, gitError.ExitCode)
+// 				assert.Equal(t, tt.wantError.Stderr, gitError.Stderr)
+// 			} else {
+// 				require.NoError(t, err)
+// 			}
+// 			assert.Equal(t, tt.wantGHBranchConfig, ghBranchConfig)
+// 		})
+// 	}
+// }
+
+func Test_parseGHBranchConfig(t *testing.T) {
+	tests := []struct {
+		name               string
+		branch             string
+		branchConfigLines  []string
+		remotePushDefault  string
+		revParse           string
+		wantGHBranchConfig GHBranchConfig
+	}{
+		{
+			name:   "when the branch is named feature-branch and in a centralized workflow with a resolved rev-parse, it should return the correct GHBranchConfig",
+			branch: "feature-branch",
+			branchConfigLines: []string{
+				"branch.feature-branch.remote origin",
+				"branch.feature-branch.merge refs/heads/feature-branch",
+			},
+			remotePushDefault: "",
+			revParse:          "origin/feature-branch",
+			wantGHBranchConfig: GHBranchConfig{
+				Merge: RemoteRef{
+					Remote: "origin",
+					Branch: "feature-branch",
+				},
+				Push: RemoteRef{
+					Remote: "origin",
+					Branch: "feature-branch",
+				},
+			},
+		},
+		{
+			name:   "when the branch is named other-branch and in a centralized workflow with a resolved rev-parse, it should return the correct GHBranchConfig",
+			branch: "other-branch",
+			branchConfigLines: []string{
+				"branch.other-branch.remote origin",
+				"branch.other-branch.merge refs/heads/other-branch",
+			},
+			remotePushDefault: "",
+			revParse:          "origin/other-branch",
+			wantGHBranchConfig: GHBranchConfig{
+				Merge: RemoteRef{
+					Remote: "origin",
+					Branch: "other-branch",
+				},
+				Push: RemoteRef{
+					Remote: "origin",
+					Branch: "other-branch",
+				},
+			},
+		},
+		{
+			name:   "when the branch is named feature-branch and in a triangular workflow with the main, no remote.pushdefault set, and rev-parse is unresolved, it should return the correct GHBranchConfig",
+			branch: "feature-branch",
+			branchConfigLines: []string{
+				"branch.feature-branch.remote origin",
+				"branch.feature-branch.merge refs/heads/main",
+			},
+			remotePushDefault: "",
+			revParse:          "",
+			wantGHBranchConfig: GHBranchConfig{
+				Merge: RemoteRef{
+					Remote: "origin",
+					Branch: "main",
+				},
+				Push: RemoteRef{
+					Remote: "origin",
+					Branch: "feature-branch",
+				},
+			},
+		},
+		{
+			name:   "when the branch is named feature-branch from a fork called origin and in a triangular workflow with the Fork's parent repo called upstream, remote.pushdefault is set, and rev-parse is unresolved, it should return the correct GHBranchConfig",
+			branch: "feature-branch",
+			branchConfigLines: []string{
+				"branch.feature-branch.remote upstream",
+				"branch.feature-branch.merge refs/heads/main",
+			},
+			remotePushDefault: "origin",
+			revParse:          "",
+			wantGHBranchConfig: GHBranchConfig{
+				Merge: RemoteRef{
+					Remote: "upstream",
+					Branch: "main",
+				},
+				Push: RemoteRef{
+					Remote: "origin",
+					Branch: "feature-branch",
+				},
+			},
+		},
+		{
+			name:   "when the branch is named feature-branch from a fork called origin and in a triangular workflow with the Fork's parent repo called upstream, pushdefault is set on the branch, and rev-parse is unresolved, it should return the correct GHBranchConfig",
+			branch: "feature-branch",
+			branchConfigLines: []string{
+				"branch.feature-branch.remote upstream",
+				"branch.feature-branch.merge refs/heads/main",
+				"branch.feature-branch.pushremote origin",
+			},
+			remotePushDefault: "",
+			revParse:          "",
+			wantGHBranchConfig: GHBranchConfig{
+				Merge: RemoteRef{
+					Remote: "upstream",
+					Branch: "main",
+				},
+				Push: RemoteRef{
+					Remote: "origin",
+					Branch: "feature-branch",
+				},
+			},
+		},
+		{
+			name:   "when the branch is named feature-branch from a fork called origin and in a triangular workflow with the Fork's parent repo called upstream, pushdefault is set on the branch, rev-parse is unresolved, and the branch config is in a different order, it should return the correct GHBranchConfig",
+			branch: "feature-branch",
+			branchConfigLines: []string{
+				"branch.feature-branch.pushremote origin",
+				"branch.feature-branch.remote upstream",
+				"branch.feature-branch.merge refs/heads/main",
+			},
+			remotePushDefault: "",
+			revParse:          "",
+			wantGHBranchConfig: GHBranchConfig{
+				Merge: RemoteRef{
+					Remote: "upstream",
+					Branch: "main",
+				},
+				Push: RemoteRef{
+					Remote: "origin",
+					Branch: "feature-branch",
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghBranchConfig := parseGHBranchConfig(tt.branch, tt.branchConfigLines, tt.remotePushDefault, tt.revParse)
+			assert.Equal(t, tt.wantGHBranchConfig, ghBranchConfig)
+		})
+	}
+}
+
 func Test_parseRemoteURLOrName(t *testing.T) {
 	tests := []struct {
 		name           string
